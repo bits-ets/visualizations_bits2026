@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="bits_logo.jpg" width="400">
+</p>
+
 # Assemblea BITS 2026 Visualizations
 
 Data analysis and visualization for the 2026 BITS assembly membership report.
