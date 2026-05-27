@@ -1,0 +1,623 @@
+---
+title: "Assemblea BITS 2026 visualizations"
+output: html_notebook
+---
+
+```{r}
+suppressPackageStartupMessages({
+  library(here)
+  library(tidyverse)
+  library(lubridate)
+  library(ggrepel)
+})
+
+main_folder <- here()
+```
+
+```{r}
+quote_soci26 <- readxl::read_xlsx(file.path(main_folder,"soci2026/BITS-quote.xlsx"))
+
+# extract info from codice fiscale
+month_decode <- data.frame(letter = c("A","B","C","D","E","H","L","M","P","R","S","T"),
+                           month = c("01","02","03","04","05","06","07","08","09","10","11","12")) %>%
+  column_to_rownames("letter")
+```
+
+```{r}
+quote_soci <- quote_soci26 %>%
+  rename("type"=Tipo, "first_name"=Nome, "last_name"=Cognome, "tax_ID_code"="Codice fiscale") %>%
+  mutate(member_since = as.Date(`Socio dal`, format = "%d/%m/%Y"), .after="type") %>%
+  mutate(cf = gsub("([A-Z]*)([0-9]*)", "\\1 \\2 \\3", tax_ID_code), .after = tax_ID_code) %>%
+  separate(cf, into = c("cognome_nome", "anno", "mese", "giorno", NA)) %>%
+  mutate(anno = ifelse(anno > 26, gsub("^","19",anno), gsub("^","20",anno))) %>%
+  mutate(mese = as.character(month_decode[mese,])) %>%
+  mutate(gender = ifelse(giorno > 40, "F", "M"), .after=giorno) %>%
+  mutate(giorno = ifelse(giorno > 40, as.numeric(giorno)-40, as.numeric(giorno))) %>%
+  mutate(giorno = ifelse(giorno<10, str_pad(giorno, 2, pad = "0"), giorno)) %>%
+  unite(birth, anno:giorno, sep="-") %>%
+  mutate(birth=ifelse(birth=="NA-NA-NA",NA,birth)) %>%
+  select(ID,type,last_name,first_name,member_since,birth,matches("^20(0[9]|1[0-9]|2[0-9])$") ) %>%
+  mutate(age = trunc((birth %--% ymd(paste0(year(Sys.Date()), "-06-01")) ) / years(1)), .after=birth) %>%
+  mutate(age_interval = cut(as.numeric(age), 
+                            breaks = c(18,24,34,44,54,64,99), 
+                            labels = c("18–24","25–34","35–44","45–54","55–64","65+"),
+                            include.lowest = T), .after=age)
+
+
+soci_regolari <- quote_soci %>%
+  filter(`2026`=="SI")
+```
+
+
+```{r}
+new_members_age_distribution <- quote_soci %>%
+  filter(!last_name=="Finotello") %>% #removed because there are two different entries for this member
+  mutate(year_joined = year(as.Date(member_since)),
+         age_at_join = floor(interval(birth, member_since) / years(1))  ) %>%
+  mutate(age_interval_at_join = cut(as.numeric(age_at_join), 
+                            breaks = c(18,24,34,44,54,64,99), 
+                            labels = c("18–24","25–34","35–44","45–54","55–64","65+"),
+                            include.lowest = T), .after=age) %>%
+  filter(!is.na(year_joined), !is.na(age_interval_at_join)) %>%
+  group_by(year_joined, age_interval_at_join) %>%
+  summarise(count = n(), .groups = "drop")
+
+p1 <- ggplot(new_members_age_distribution, aes(x = year_joined, y = count, fill = age_interval_at_join)) +
+  geom_col(position = "stack") +
+  scale_fill_brewer(palette = "Set3") +
+  labs(
+    title = "Age Distribution of New Members per Year",
+    x = "Year Joined",
+    y = "New Members",
+    fill = "Age Interval"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.title.x = element_text(size = 14, color = "grey40", margin = margin(t = 20)),
+    axis.title.y = element_text(size = 14, color = "grey40", margin = margin(r = 20))
+  )
+p1
+
+p1 <- ggplot(new_members_age_distribution, aes(x = year_joined, y = count, fill = age_interval_at_join)) +
+  geom_col(position = "stack") +
+  scale_x_continuous(breaks = seq(
+    min(new_members_age_distribution$year_joined),
+    max(new_members_age_distribution$year_joined),
+    by = 1 ) ) +
+  scale_fill_brewer(palette = "Set3") +
+  labs(
+    title = "Age Distribution of New Members per Year",
+    x = "Year Joined",
+    y = "New Members",
+    fill = "Age Interval"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.title.x = element_text(size = 14, color = "grey40", margin = margin(t = 20)),
+    axis.text.x = element_text(size = 10, angle = 45, hjust = 1),
+    axis.title.y = element_text(size = 14, color = "grey40", margin = margin(r = 20)),
+    
+    panel.grid.minor = element_blank()
+  )
+p1
+```
+
+```{r}
+p1.b <- p1 +
+  labs(
+    title = "Age Distribution of New Members per Year",
+    subtitle = "This bar chart shows the distribution of <b>new members</b> by <b>age interval</b> from <b>2003 to 2026</b>.<br>It helps highlight the shifting age demographics of incoming members each year."
+
+  ) +
+  theme(
+    plot.title = element_text(size = 20, face = "bold", hjust = 0),
+    plot.subtitle = ggtext::element_markdown(size = 10, lineheight = 1.2)
+  )
+p1.b
+```
+
+```{r}
+png(file.path(main_folder,"new_members_age_distr.png"), width = 2500, height = 2000, res = 300)
+
+p1.b
+
+dev.off()
+```
+
+
+
+#----------------------
+
+```{r}
+# Median age at membership start
+median_age_by_year <- quote_soci %>%
+  filter(!last_name=="Finotello") %>%
+  mutate(
+    year_joined = year(as.Date(member_since)),
+    age_at_join = floor(interval(birth, member_since) / years(1))
+  ) %>%
+  filter(!is.na(age_at_join)) %>%
+  group_by(year_joined) %>%
+  summarise(median_age = median(age_at_join)) %>%
+  ungroup()
+
+p2 <- ggplot(median_age_by_year, aes(x = year_joined, y = median_age)) +
+  geom_line(color = "#1f78b4", size = 1.2) +
+  geom_point(color = "#1f78b4", size = 3) +
+  scale_x_continuous(breaks = seq(
+    min(median_age_by_year$year_joined),
+    max(median_age_by_year$year_joined),
+    by = 1 ) ) +
+  labs(
+    title = "Median Age at Membership Start",
+    x = "Year Joined",
+    y = "Median Age"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.title.x = element_text(size = 14, color = "grey40", margin = margin(t = 20)),
+    axis.title.y = element_text(size = 14, color = "grey40", margin = margin(r = 20)),
+    axis.text = element_text(size = 12),
+    axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
+    
+    panel.grid.minor = element_blank()
+  )
+p2
+```
+
+```{r}
+png(file.path(main_folder,"median_age_membership_start.png"), width = 2500, height = 2000, res = 300)
+
+p2
+
+dev.off()
+```
+
+
+
+#----------------------
+
+```{r}
+library(tidyverse)
+library(ggrepel)
+library(ggtext)
+
+library(showtext)
+font_add_google("Lato")
+showtext_auto()
+```
+
+```{r}
+# This theme extends the 'theme_minimal' that comes with ggplot2.
+# The "Lato" font is used as the base font. This is similar
+# to the original font in Cedric's work, Avenir Next Condensed.
+theme_set(theme_minimal(base_family = "Lato"))
+
+
+theme_update(
+  # Remove title for both x and y axes
+  axis.title = element_blank(),
+  # Axes labels are grey
+  axis.text = element_text(color = "grey40"),
+  # The size of the axes labels are different for x and y.
+  #axis.text.x = element_text(size = 20, margin = margin(t = 5)),
+  axis.text.x = element_text(size = 16, margin = margin(t = 5)),
+  axis.text.y = element_text(size = 17, margin = margin(r = 5)),
+  # Also, the ticks have a very light grey color
+  axis.ticks = element_line(color = "grey91", size = .5),
+  # The length of the axis ticks is increased.
+  axis.ticks.length.x = unit(1.3, "lines"),
+  axis.ticks.length.y = unit(.7, "lines"),
+  # Remove the grid lines that come with ggplot2 plots by default
+  panel.grid = element_blank(),
+  # Customize margin values (top, right, bottom, left)
+  plot.margin = margin(20, 40, 20, 40),
+  # Use a light grey color for the background of both the plot and the panel
+  # plot.background = element_rect(fill = "grey98", color = "grey98"),
+  # panel.background = element_rect(fill = "grey98", color = "grey98"),
+  plot.background = element_rect(fill = "white", color = "white"),
+  panel.background = element_rect(fill = "white", color = "white"),
+  # Customize title appearence
+  plot.title = element_text(
+    color = "grey10", 
+    size = 28, 
+    face = "bold",
+    margin = margin(t = 15)
+  ),
+  # Customize subtitle appearence
+  plot.subtitle = element_markdown(
+    color = "grey30", 
+    size = 16,
+    lineheight = 1.35,
+    margin = margin(t = 15, b = 40)
+  ),
+  # Title and caption are going to be aligned
+  plot.title.position = "plot",
+  plot.caption.position = "plot",
+  plot.caption = element_text(
+    color = "grey30", 
+    size = 13,
+    lineheight = 1.2, 
+    hjust = 0,
+    margin = margin(t = 40) # Large margin on the top of the caption.
+  ),
+  # Remove legend
+  legend.position = "none"
+)
+```
+
+
+```{r}
+df_binary <- quote_soci %>%
+  #select(ID, matches("^20(0[9]|1[0-9]|2[0-5])$")) %>%
+  mutate(across(starts_with("20"), ~ ifelse(. == "SI", 1, 0))) %>%
+  mutate(across(starts_with("20"), ~ ifelse(is.na(.), 0, .)))
+
+new_members_per_year <- df_binary %>%
+  mutate(year_joined = year(as.Date(member_since))) %>%
+  filter(!is.na(year_joined)) %>%
+  count(year_joined, name = "new_members") %>%
+  mutate(year_joined = as.character(year_joined))
+
+years <- 2009:2026
+# non-renewing members count for each year
+non_renewed <- map_dfr(years[-1], function(y) {
+  prev_year <- as.character(y - 1)
+  curr_year <- as.character(y)
+
+  n_non_renewed <- df_binary %>%
+    filter(.data[[prev_year]] == 1, .data[[curr_year]] == 0) %>%
+    nrow()
+
+  tibble(year = y, non_renewed = n_non_renewed) %>%
+    mutate(year = as.character(year))
+})
+
+library(janitor)
+payments_per_year <- df_binary %>%
+  select(last_name, matches("^20(0[9]|1[0-9]|2[0-6])$")) %>%
+  adorn_totals("row") %>%
+  slice(n()) %>%
+  select(-last_name) %>%
+  t(.) %>%
+  as.data.frame(.) %>%
+  rename("payments"=V1) %>%  # payments = total members
+  rownames_to_column("year") %>%
+  inner_join(.,new_members_per_year, by=c("year"="year_joined")) %>%
+  left_join(.,non_renewed)
+```
+
+Total_Members, New_Associates, Paid_Quote
+```{r}
+# reshape data
+df_long <- payments_per_year %>%
+  pivot_longer(cols = c(payments, new_members, non_renewed),
+               names_to = "class", values_to = "value") %>%
+  # filter(!year %in% c("2009","2026")) %>%
+  # mutate(label = ifelse(year=="2025"&class=="payments","Total Members",NA)) %>%
+  # mutate(label = ifelse(year=="2025"&class=="new_members","New Associates",label)) %>%
+  # mutate(label = ifelse(year=="2025"&class=="non_renewed","Non Renewed",label)) %>%
+  filter(!year %in% c("2009")) %>%
+  mutate(label = ifelse(year=="2026"&class=="payments","Total Members",NA)) %>%
+  mutate(label = ifelse(year=="2026"&class=="new_members","New Associates",label)) %>%
+  mutate(label = ifelse(year=="2026"&class=="non_renewed","Non Renewed",label)) %>%
+  mutate(year = as.numeric(year)) 
+
+
+plt <- ggplot(
+  df_long, aes(year, value, class)
+) + 
+  # Geometric annotations that play the role of grid lines
+  geom_vline(
+    xintercept = seq(2010, 2026, by = 1),
+    color = "grey91", 
+    size = .6
+  ) +
+  geom_segment(
+    data = tibble(y = seq(0, 150, by = 25), x1 = 2010, x2 = 2026),
+    aes(x = x1, xend = x2, y = y, yend = y),
+    inherit.aes = FALSE,
+    color = "grey91",
+    size = .6
+  ) +
+  geom_line(
+    aes(color = class),
+    size = .9
+  )
+plt
+```
+
+```{r}
+plt.a <- plt + 
+  geom_text_repel(
+    aes(color = class, label = label),
+    family = "Lato",
+    fontface = "bold",
+    size = 4,
+    direction = "y",
+    xlim = c(2026.8, Inf),
+    hjust = 0,
+    segment.size = .7,
+    segment.alpha = .5,
+    segment.linetype = "dotted",
+    box.padding = .2,
+    segment.curvature = -0.1,
+    segment.ncp = 3,
+    segment.angle = 20
+  ) +
+  ## coordinate system + scales
+  coord_cartesian(
+    clip = "off",
+    ylim = c(0, 150)
+  ) +
+  scale_x_continuous(
+    expand = c(0, 0),
+    #limits = c(2010, 2028),
+    limits = c(2010, 2030),
+    breaks = seq(2010, 2026, by = 4)
+  ) +
+  scale_y_continuous(
+    expand = c(0, 0),
+    breaks = seq(0, 150, by = 25)
+  ) +
+  theme(
+    #axis.title.x = element_text(size = 13, color = "grey40", margin = margin(t = 10)),
+    #axis.title.y = element_text(size = 13, color = "grey40", margin = margin(r = 10)),
+    axis.text = element_text(size = 12),
+  )
+plt.a
+```
+
+```{r}
+plt.b <- plt.a + 
+  scale_color_manual(
+    values = c("#F2B701", "#E73F74", "#80BA5A")
+  ) +
+  labs(
+    title = "Annual Membership Trends",
+    subtitle = "This line chart tracks changes in key association metrics between 2010 and 2026. It compares the number<br>of <b style='color:#80BA5A'>Total Members</b>, <b style='color:#F2B701'>New Associates</b>, and <b style='color:#E73F74'>Non Renewed</b>, helping visualize growth and engagement trends<br>year over year."
+  ) +
+  theme(
+    plot.title = element_text(size = 20, face = "bold", hjust = 0),
+    plot.subtitle = ggtext::element_markdown(size = 10, lineheight = 1.2)
+  )
+plt.b
+```
+
+```{r}
+png(file.path(main_folder,"line_chart_up_to_2026.png"), width = 2500, height = 2000, res = 300)
+
+plt.b
+
+dev.off()
+```
+
+
+
+
+```{r}
+payments_per_year2 <- payments_per_year %>% 
+  #filter(!year %in% c("2009","2026")) %>% 
+  filter(!year %in% c("2009")) %>%
+  mutate(year=as.numeric(year))
+p3 <- ggplot(payments_per_year2 %>% mutate(year = as.numeric(year)), aes(x = year, y = payments)) +
+  # Add vertical lines for each year
+  geom_vline(
+    xintercept = seq(min(payments_per_year2$year), max(payments_per_year2$year), by = 1),
+    color = "grey90",
+    size = 0.5
+  ) +
+  # Line and points
+  geom_line(color = "#1f78b4", size = 1) +
+  geom_point(color = "#1f78b4", size = 2) +
+  # Add labels above points
+  geom_text_repel(
+    aes(label = payments),
+    size = 4,
+    color = "grey30",
+    nudge_y = 5,
+    max.overlaps = Inf,
+    segment.color = NA
+  ) +
+  # Titles and axis labels
+  labs(
+    title = "Annual Membership Payments",
+    subtitle = "Total number of members who paid the annual fee",
+    x = NULL,
+    y = "Members in Good Standing"
+  ) +
+  # Ensure every year is labeled on x-axis
+  scale_x_continuous(
+    breaks = seq(min(payments_per_year$year), max(payments_per_year$year), by = 2)
+  ) +
+  # Theme settings
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.title.y = element_text(size = 13, color = "grey40", margin = margin(r = 10)),
+    axis.text = element_text(size = 12),
+    plot.title = element_text(size = 18, face = "bold"),
+    plot.subtitle = ggtext::element_markdown(size = 13, color = "grey30")
+  )
+p3
+
+p3 <- ggplot(payments_per_year2, aes(x = year, y = payments)) +
+  geom_line(color = "#1f78b4", size = 1) +
+  geom_point(color = "#1f78b4", size = 2) +
+  geom_text_repel(
+    aes(label = payments),
+    size = 4,
+    color = "grey30",
+    nudge_y = 5,
+    max.overlaps = Inf,
+    segment.color = NA
+  ) +
+  scale_x_continuous(
+    breaks = c(min(payments_per_year2$year), seq(min(payments_per_year2$year) + 2, max(payments_per_year2$year), by = 2))
+  ) +
+  labs(
+    title = "Annual Membership Payments",
+    subtitle = "Total number of members who paid the annual fee",
+    x = NULL,
+    y = "Members in Good Standing"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.title.y = element_text(size = 13, color = "grey40", margin = margin(r = 10)),
+    axis.text = element_text(size = 12),
+    plot.title = element_text(size = 18, face = "bold"),
+    plot.subtitle = ggtext::element_markdown(size = 13, color = "grey30")
+  )
+p3
+```
+
+```{r}
+png(file.path(main_folder,"annual_membership_payments.png"), width = 2500, height = 2000, res = 300)
+
+p3
+
+dev.off()
+```
+
+
+# BITS members lost from 2024 to 2025
+```{r}
+lost_in_25 <- quote_soci %>%
+  filter((`2024`=="SI") & (is.na(`2025`))) 
+
+acquired_in_25 <- quote_soci %>%
+  filter((`2025`=="SI") & (is.na(`2024`))) 
+
+diff <- quote_soci %>%
+  filter(!ID %in% acquired_in_25$ID) %>%
+  filter(grepl("^2025", member_since))
+write.table(diff, file=file.path(main_folder,"lost_in_25_never_paid.tsv"), 
+  col.names = TRUE, row.names = FALSE, sep="\t")
+
+lost_in_25_age_distribution <- lost_in_25 %>% 
+  mutate(
+    year_joined = year(as.Date(member_since)),
+    age_at_leave = floor(interval(birth,"2025-06-01") / years(1))
+  ) %>%
+  mutate(age_interval_at_leave = cut(as.numeric(age_at_leave), 
+                            breaks = c(18,24,34,44,54,64,99), 
+                            labels = c("18–24","25–34","35–44","45–54","55–64","65+"),
+                            include.lowest = T), .after=age) %>%
+  filter(!is.na(year_joined), !is.na(age_interval_at_leave)) %>%
+  group_by(age_interval_at_leave) %>%
+  summarise(count = n(), .groups = "drop")
+
+p4 <- ggplot(lost_in_25_age_distribution, aes(x = age_interval_at_leave, y = count, fill = age_interval_at_leave)) +
+  geom_col(position = "stack") +
+  scale_fill_brewer(palette = "Set3") +
+  labs(
+    title = "Age Distribution of Lost Members from 2024 to 2025",
+    x = NULL,
+    y = "Lost Members",
+    fill = "Age Interval"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    #axis.title.x = element_text(size = 14, color = "grey40", margin = margin(t = 20)),
+    axis.title.y = element_text(size = 14, color = "grey40", margin = margin(r = 20)),
+    panel.grid.minor.y = element_blank()
+  ) +
+  scale_y_continuous(
+    expand = c(0, 0),
+    breaks = seq(0, 12, by = 1)
+  )
+p4
+```
+
+```{r}
+png(file.path(main_folder,"lost_in_25_age_distribution.png"), width = 2500, height = 2000, res = 300)
+
+p4
+
+dev.off()
+```
+
+
+
+#---------
+
+```{r}
+membership_from_2009 <- payments_per_year %>%
+  select(year, payments, new_members) %>%
+  pivot_longer(cols = c(payments, new_members), names_to = "metric", values_to = "value")  %>%
+  mutate(
+    metric = factor(metric, levels = c("payments", "new_members"), 
+                    labels = c("Active Members", "New Members"))
+  )
+
+p5 <- ggplot(membership_from_2009, aes(x = factor(year), y = value, fill = metric)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.7) +
+  scale_fill_manual(
+    values = c("Active Members" = "#80BA5A", "New Members" = "#F2B701")
+  ) +
+  labs(
+    title = "Active and New Members Over the Years",
+    x = NULL,
+    y = NULL,
+    fill = ""
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "bottom"
+  ) +
+  geom_text(
+    aes(label = value),
+    position = position_dodge(width = 0.8),
+    vjust = -0.3,
+    size = 4
+  )
+p5
+
+png(file.path(main_folder,"membership_from_2009.png"), width = 2500, height = 2000, res = 300)
+
+p5
+
+dev.off()
+```
+
+```{r}
+
+membership_from_2020 <- payments_per_year %>%
+  select(year, payments, new_members) %>%
+  filter(year %in% c("2020","2021","2022","2023","2024","2025")) %>%
+  pivot_longer(cols = c(payments, new_members), names_to = "metric", values_to = "value")  %>%
+  mutate(
+    metric = factor(metric, levels = c("payments", "new_members"), 
+                    labels = c("Active Members", "New Members"))
+  )
+
+p6 <- ggplot(membership_from_2020, aes(x = factor(year), y = value, fill = metric)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.7) +
+  scale_fill_manual(
+    values = c("Active Members" = "#80BA5A", "New Members" = "#F2B701")
+  ) +
+  labs(
+    title = "Active and New Members Over the Years",
+    x = NULL,
+    y = NULL,
+    fill = ""
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 1),
+    legend.position = "bottom"
+  ) +
+  geom_text(
+    aes(label = value),
+    position = position_dodge(width = 0.8),
+    vjust = -0.3,
+    size = 4
+  )
+p6
+
+png(file.path(main_folder,"membership_from_2020.png"), width = 2500, height = 2000, res = 300)
+
+p6
+
+dev.off()
+```
